@@ -17,8 +17,8 @@ import StatBadge from '@/components/common/StatBadge.vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useSurveyStore } from '@/stores/surveyStore'
-import { BLEACH_LEVELS } from '@/types/coralRecord'
-import type { BleachLevel } from '@/types/coralRecord'
+import { BLEACH_LEVELS, PROTOCOL_LABEL } from '@/types/assessment'
+import type { BleachAssessment, BleachLevel, ProtocolVersion } from '@/types/assessment'
 import { BLEACH_COLOR } from '@/utils/bleach'
 import {
   DB_NAME,
@@ -46,7 +46,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const surveyStore = useSurveyStore()
 
-const EMPTY_COUNTS: CountMap = { reefs: 0, sites: 0, belts: 0, corals: 0, fishes: 0 }
+const EMPTY_COUNTS: CountMap = { reefs: 0, sites: 0, belts: 0, substrates: 0, assessments: 0, fishes: 0 }
 
 const counts = ref<CountMap>(EMPTY_COUNTS)
 const lastBackupAt = ref<string | null>(null)
@@ -67,7 +67,10 @@ const rows = computed(() => surveyStore.filteredCoverageRows)
 
 const totals = computed(() => ({
   belts: rows.value.length,
-  coralCount: rows.value.reduce((sum, row) => sum + row.coralCount, 0),
+  substrateCount: rows.value.reduce((sum, row) => sum + row.substrateCount, 0),
+  assessedCount: rows.value.reduce((sum, row) => sum + row.assessedCount, 0),
+  suspendedCount: surveyStore.suspendedAssessments.length,
+  archivedCount: surveyStore.archivedAssessments.length,
   coverCmTotal: rows.value.reduce((sum, row) => sum + row.coverCmTotal, 0),
   fishTotal: rows.value.reduce((sum, row) => sum + row.fishTotal, 0),
   avgCoveragePct:
@@ -80,6 +83,16 @@ const totals = computed(() => ({
       : Number((rows.value.reduce((sum, row) => sum + row.bleachIndex, 0) / rows.value.length).toFixed(2)),
   bleachedBelts: rows.value.filter((row) => row.bleachedSharePct > 0).length
 }))
+
+/** 旧版规程留档的白化行（按当时版本封存，不进当年汇总，单独列示不混算） */
+const archivedRows = computed(() => surveyStore.archivedBleachRows)
+
+function protocolLabelOf(v: ProtocolVersion): string {
+  return PROTOCOL_LABEL[v]
+}
+function asAssessment(row: unknown): import('@/types/assessment').BleachAssessment {
+  return (row as { assessment: import('@/types/assessment').BleachAssessment }).assessment
+}
 
 /** 当前筛选结果内的白化等级分布 */
 const distribution = computed<Record<BleachLevel, number>>(() => {
@@ -115,7 +128,10 @@ async function refresh(): Promise<void> {
     orientation: row.orientation,
     surveyDate: row.surveyDate,
     observer: row.observer,
-    coralCount: row.coralCount,
+    substrateCount: row.substrateCount,
+    assessedCount: row.assessedCount,
+    suspendedCount: row.suspendedCount,
+    archivedCount: row.archivedCount,
     coverCmTotal: row.coverCmTotal,
     coveragePct: row.coveragePct,
     bleachIndex: row.bleachIndex,
@@ -200,7 +216,7 @@ async function handleImport(): Promise<void> {
 async function handleDatabaseReset(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '将清空全部本地数据并重新播种演示数据（礁区、站位、样带、珊瑚记录、鱼类计数）。确认继续？',
+      '将清空全部本地数据并重新播种演示数据（礁区、站位、样带、外业底质、评定单、鱼类计数）。确认继续？',
       '重置本地数据',
       { type: 'warning', confirmButtonText: '清空并重建', cancelButtonText: '取消' }
     )
@@ -263,16 +279,18 @@ onMounted(() => {
 
     <div class="gb-stats-row">
       <StatBadge label="样带数" :value="totals.belts" suffix="条" icon="Files" />
-      <StatBadge label="珊瑚记录" :value="totals.coralCount" suffix="条" tone="info" icon="Histogram" />
+      <StatBadge label="外业底质" :value="totals.substrateCount" suffix="条" tone="info" icon="Histogram" />
+      <StatBadge label="现行已评定" :value="totals.assessedCount" suffix="条" icon="CircleCheckFilled" />
       <StatBadge label="覆盖长度合计" :value="totals.coverCmTotal" suffix="cm" tone="success" icon="Odometer" />
       <StatBadge label="平均覆盖率" :value="totals.avgCoveragePct" suffix="%" :percent="Math.min(100, totals.avgCoveragePct)" icon="PieChart" />
       <StatBadge
-        label="平均白化指数"
+        label="当年平均白化指数"
         :value="totals.avgBleachIndex"
         suffix="/ 4"
         :tone="totals.avgBleachIndex > 1 ? 'warning' : 'success'"
         :icon="totals.avgBleachIndex > 1 ? 'WarningFilled' : 'DataLine'"
       />
+      <StatBadge label="挂起 / 旧版留档" :value="`${totals.suspendedCount} / ${totals.archivedCount}`" suffix="单" tone="warning" icon="Warning" />
       <StatBadge label="鱼类合计" :value="totals.fishTotal" suffix="尾" tone="warning" icon="TrendCharts" />
     </div>
 
@@ -300,10 +318,11 @@ onMounted(() => {
 
     <el-card shadow="never" class="gb-panel">
       <div class="gb-panel-title">
-        <h3>白化等级分布（覆盖长度 cm）</h3>
+        <h3>当年白化等级分布（现行规程已评定，覆盖长度 cm）</h3>
         <span class="gb-hint">
-          总体白化指数 {{ surveyStore.globalStats.bleachIndex }}（{{ surveyStore.globalStats.grade }}）· 白化占比
-          {{ surveyStore.globalStats.bleachedSharePct }}% · 存在白化样带 {{ totals.bleachedBelts }} 条
+          仅现行分级规程、已对上的评定单计入当年 · 总体白化指数 {{ surveyStore.globalStats.bleachIndex }}（{{ surveyStore.globalStats.grade }}）· 白化占比
+          {{ surveyStore.globalStats.bleachedSharePct }}% · 挂起 {{ surveyStore.suspendedAssessments.length }} 单 · 旧版留档
+          {{ surveyStore.archivedAssessments.length }} 单（两版不混算）
         </span>
       </div>
       <div class="gb-bars">
@@ -345,9 +364,12 @@ onMounted(() => {
             <span class="gb-mono">{{ row.lengthM }} m</span>
           </template>
         </el-table-column>
-        <el-table-column label="珊瑚记录" width="100" align="right">
+        <el-table-column label="底质 / 评定" width="120" align="right">
           <template #default="{ row }">
-            <span class="gb-mono">{{ row.coralCount }}</span>
+            <span class="gb-mono">{{ row.substrateCount }} / {{ row.assessedCount }}</span>
+            <div v-if="row.suspendedCount > 0 || row.archivedCount > 0" class="gb-hint gb-mono">
+              挂{{ row.suspendedCount }} · 档{{ row.archivedCount }}
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="覆盖率" width="130" align="right">
@@ -401,8 +423,44 @@ onMounted(() => {
 
     <el-card shadow="never" class="gb-panel">
       <div class="gb-panel-title">
-        <h3>按礁区的白化评定</h3>
-        <span class="gb-hint">平均白化指数为礁区内各样带白化指数的算术平均</span>
+        <h3>换版前旧版规程留档（{{ archivedRows.length }} 条，不计入当年）</h3>
+        <span class="gb-hint">按当时分级规程版本封存，仅留档查询，不与现行规程混算</span>
+      </div>
+      <EmptyPanel
+        v-if="archivedRows.length === 0"
+        title="没有旧版规程留档记录"
+        description="换版前的评定单会按当时版本在此留档；没有历史航次时此处为空。"
+        compact
+      />
+      <el-table v-else :data="archivedRows" border stripe size="small" class="gb-table-compact">
+        <el-table-column label="站位编号" width="100">
+          <template #default="{ row }">{{ row.siteNo }}</template>
+        </el-table-column>
+        <el-table-column prop="genus" label="属名" min-width="140" />
+        <el-table-column label="当时白化等级" width="140">
+          <template #default="{ row }">
+            <BleachTag :level="row.bleachLevel" size="small" :plain="true" />
+          </template>
+        </el-table-column>
+        <el-table-column label="覆盖长度 (cm)" width="130" align="right">
+          <template #default="{ row }"><span class="gb-mono">{{ row.coverCm }}</span></template>
+        </el-table-column>
+        <el-table-column label="规程版本 / 评定日期" min-width="220">
+          <template #default="{ row }">
+            <div class="gb-mono">{{ protocolLabelOf(asAssessment(row).protocolVersion) }}</div>
+            <div class="gb-hint">
+              {{ asAssessment(row).assessedDate }}
+              <span v-if="!asAssessment(row).protocolKnown"> · 版本未查实，按旧规程挂着</span>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-card shadow="never" class="gb-panel">
+      <div class="gb-panel-title">
+        <h3>按礁区的当年白化评定</h3>
+        <span class="gb-hint">平均白化指数为礁区内各样带当年（现行规程已对上）指数的算术平均；挂起 / 旧版留档不参与</span>
       </div>
       <el-table :data="reefSummaries" border stripe class="gb-table-compact">
         <el-table-column prop="reefName" label="礁区" min-width="160" />
@@ -412,9 +470,14 @@ onMounted(() => {
             <span class="gb-mono">{{ row.siteCount }} / {{ row.beltCount }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="珊瑚记录" width="110" align="right">
+        <el-table-column label="底质 / 已评" width="120" align="right">
           <template #default="{ row }">
-            <span class="gb-mono">{{ row.coralCount }}</span>
+            <span class="gb-mono">{{ row.substrateCount }} / {{ row.assessedCount }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="挂起 / 留档" width="120" align="right">
+          <template #default="{ row }">
+            <span class="gb-mono">{{ row.suspendedCount }} / {{ row.archivedCount }}</span>
           </template>
         </el-table-column>
         <el-table-column label="覆盖长度" width="130" align="right">
@@ -422,7 +485,7 @@ onMounted(() => {
             <span class="gb-mono">{{ row.coverCmTotal }} cm</span>
           </template>
         </el-table-column>
-        <el-table-column label="平均白化指数" width="160">
+        <el-table-column label="当年平均白化指数" width="170">
           <template #default="{ row }">
             <BleachTag :level="row.grade" size="small" />
             <span class="gb-hint gb-mono"> {{ row.avgBleachIndex }}</span>
@@ -440,7 +503,7 @@ onMounted(() => {
       <div class="gb-panel-title">
         <h3>结构版本与全量 JSON 导入导出</h3>
         <span class="gb-hint">
-          导出内容包含 reefs / sites / belts / corals / fishes 五张表 · 最近备份
+          导出内容包含 reefs / sites / belts / substrates / assessments / fishes 六张表 · 最近备份
           {{ lastBackupAt ? new Date(lastBackupAt).toLocaleString('zh-CN') : '尚未备份' }}
         </span>
       </div>
@@ -477,7 +540,8 @@ onMounted(() => {
         <el-descriptions-item label="本地库名">{{ DB_NAME }}</el-descriptions-item>
         <el-descriptions-item label="结构版本">v{{ DB_VERSION }}（浏览器记录 v{{ stampedVersion }}）</el-descriptions-item>
         <el-descriptions-item label="礁区 / 站位">{{ counts.reefs }} / {{ counts.sites }}</el-descriptions-item>
-        <el-descriptions-item label="样带 / 珊瑚记录">{{ counts.belts }} / {{ counts.corals }}</el-descriptions-item>
+        <el-descriptions-item label="样带 / 外业底质">{{ counts.belts }} / {{ counts.substrates }}</el-descriptions-item>
+        <el-descriptions-item label="评定单（挂起）">{{ counts.assessments }}（{{ surveyStore.suspendedAssessments.length }}）</el-descriptions-item>
         <el-descriptions-item label="鱼类计数">{{ counts.fishes }}</el-descriptions-item>
         <el-descriptions-item label="最近备份时间">
           {{ lastBackupAt ? new Date(lastBackupAt).toLocaleString('zh-CN') : '尚未备份' }}

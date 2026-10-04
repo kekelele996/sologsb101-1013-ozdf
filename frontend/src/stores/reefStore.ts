@@ -152,21 +152,39 @@ export const useReefStore = defineStore('reef', () => {
     await db.reefs.update(id, { ...patch, updatedAt: Date.now() } as never)
   }
 
-  /** 删除礁区：级联删除其站位、样带、珊瑚记录与鱼类计数 */
+  /** 删除礁区：级联删除其站位、样带、外业底质与鱼类计数；评定单转挂起留痕 */
   async function removeReef(id: string): Promise<void> {
-    await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-      const siteIds = (await db.sites.where('reefId').equals(id).toArray()).map((row) => row.id)
-      if (siteIds.length > 0) {
-        const beltIds = (await db.belts.where('siteId').anyOf(siteIds).toArray()).map((row) => row.id)
-        if (beltIds.length > 0) {
-          await db.corals.where('beltId').anyOf(beltIds).delete()
-          await db.fishes.where('beltId').anyOf(beltIds).delete()
-          await db.belts.bulkDelete(beltIds)
+    await db.transaction(
+      'rw',
+      [db.reefs, db.sites, db.belts, db.substrates, db.assessments, db.fishes],
+      async () => {
+        const siteIds = (await db.sites.where('reefId').equals(id).toArray()).map((row) => row.id)
+        if (siteIds.length > 0) {
+          const beltIds = (await db.belts.where('siteId').anyOf(siteIds).toArray()).map((row) => row.id)
+          if (beltIds.length > 0) {
+            await db.substrates.where('beltId').anyOf(beltIds).delete()
+            await db.assessments
+              .where('beltId')
+              .anyOf(beltIds)
+              .modify((a) => {
+                if (a.protocolVersion !== 'GB-OLD-2010') {
+                  a.substrateId = null
+                  a.beltId = null
+                  a.status = 'suspended'
+                  a.suspendReason = 'site-missing'
+                  a.fieldAck = false
+                  a.stationAck = false
+                }
+                a.updatedAt = Date.now()
+              })
+            await db.fishes.where('beltId').anyOf(beltIds).delete()
+            await db.belts.bulkDelete(beltIds)
+          }
+          await db.sites.bulkDelete(siteIds)
         }
-        await db.sites.bulkDelete(siteIds)
+        await db.reefs.delete(id)
       }
-      await db.reefs.delete(id)
-    })
+    )
     if (currentReefId.value === id) selectReef(null)
   }
 
@@ -183,12 +201,26 @@ export const useReefStore = defineStore('reef', () => {
     await db.sites.update(id, { ...patch, updatedAt: Date.now() } as never)
   }
 
-  /** 删除站位：级联删除其样带、珊瑚记录与鱼类计数 */
+  /** 删除站位：级联删除其样带、外业底质与鱼类计数；评定单转挂起留痕 */
   async function removeSite(id: string): Promise<void> {
-    await db.transaction('rw', [db.sites, db.belts, db.corals, db.fishes], async () => {
+    await db.transaction('rw', [db.sites, db.belts, db.substrates, db.assessments, db.fishes], async () => {
       const beltIds = (await db.belts.where('siteId').equals(id).toArray()).map((row) => row.id)
       if (beltIds.length > 0) {
-        await db.corals.where('beltId').anyOf(beltIds).delete()
+        await db.substrates.where('beltId').anyOf(beltIds).delete()
+        await db.assessments
+          .where('beltId')
+          .anyOf(beltIds)
+          .modify((a) => {
+            if (a.protocolVersion !== 'GB-OLD-2010') {
+              a.substrateId = null
+              a.beltId = null
+              a.status = 'suspended'
+              a.suspendReason = 'site-missing'
+              a.fieldAck = false
+              a.stationAck = false
+            }
+            a.updatedAt = Date.now()
+          })
         await db.fishes.where('beltId').anyOf(beltIds).delete()
         await db.belts.bulkDelete(beltIds)
       }
@@ -197,7 +229,10 @@ export const useReefStore = defineStore('reef', () => {
     if (currentSiteId.value === id) selectSite(null)
   }
 
-  /** 站位 id → 样带数与平均白化指数（列表回显用） */
+  /**
+   * 站位 id → 当年平均白化指数（列表回显用）。
+   * 只取现行规程、已对上的评定单；旧版留档与挂起单不参与。
+   */
   async function siteBleachAverages(): Promise<Record<string, number>> {
     const result: Record<string, number> = {}
     for (const site of sites.value) {
@@ -206,8 +241,17 @@ export const useReefStore = defineStore('reef', () => {
         result[site.id] = 0
         continue
       }
-      const corals = await db.corals.where('beltId').anyOf(beltIds).toArray()
-      result[site.id] = round(bleachIndex(corals), 2)
+      const matched = await db.assessments
+        .where('beltId')
+        .anyOf(beltIds)
+        .and((a) => a.protocolVersion === 'GB-CURRENT-2024' && a.status === 'matched')
+        .toArray()
+      const substrateIds = new Set(matched.map((a) => a.substrateId).filter((v): v is string => !!v))
+      const rows = (await db.substrates.where('id').anyOf([...substrateIds]).toArray()).map((sub) => {
+        const a = matched.find((item) => item.substrateId === sub.id)
+        return { coverCm: sub.coverCm, bleachLevel: a?.bleachLevel ?? '无' }
+      })
+      result[site.id] = round(bleachIndex(rows), 2)
     }
     return result
   }

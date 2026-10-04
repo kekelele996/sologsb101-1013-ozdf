@@ -41,17 +41,21 @@ const form = reactive({
   observer: ''
 })
 
-/** 样带行：回显珊瑚记录数、鱼类记录数、覆盖率与白化指数 */
+/** 样带行：回显外业底质数、评定数、鱼类记录数、覆盖率与当年白化指数 */
 const rows = computed(() =>
   beltStore.beltsOfSite(siteId.value).map((belt) => {
-    const corals = surveyStore.coralsOfBelt(belt.id)
+    const subs = surveyStore.substratesOfBelt(belt.id)
+    const currentRows = surveyStore.currentRowsOfBelt(belt.id)
+    const suspended = surveyStore.assessmentsOfBelt(belt.id).filter((a) => a.status === 'suspended').length
     const fishes = surveyStore.fishesOfBelt(belt.id)
-    const coverCmTotal = corals.reduce((sum, coral) => sum + coral.coverCm, 0)
-    const index = bleachIndex(corals)
+    const coverCmTotal = subs.reduce((sum, sub) => sum + sub.coverCm, 0)
+    const index = bleachIndex(currentRows)
     const fishTotal = fishes.filter((fish) => fish.category === '鱼类').reduce((sum, fish) => sum + fish.count, 0)
     return {
       belt,
-      coralCount: corals.length,
+      coralCount: subs.length,
+      assessedCount: currentRows.length,
+      suspendedCount: suspended,
       fishCount: fishes.length,
       coverCmTotal,
       coveragePct: coralCoveragePct(coverCmTotal, belt.lengthM),
@@ -67,7 +71,7 @@ const conflicts = computed(() => beltStore.findBeltConflicts(siteId.value))
 const stats = computed(() => {
   const belts = beltStore.beltsOfSite(siteId.value)
   const totalLength = belts.reduce((sum, belt) => sum + belt.lengthM, 0)
-  const coralCount = belts.reduce((sum, belt) => sum + surveyStore.coralsOfBelt(belt.id).length, 0)
+  const coralCount = belts.reduce((sum, belt) => sum + surveyStore.substratesOfBelt(belt.id).length, 0)
   const fishCount = belts.reduce((sum, belt) => sum + surveyStore.fishesOfBelt(belt.id).length, 0)
   return {
     beltCount: belts.length,
@@ -152,10 +156,10 @@ async function submitForm(): Promise<void> {
 }
 
 async function removeBelt(belt: Belt): Promise<void> {
-  const counts = surveyStore.beltRecordCounts[belt.id] ?? { coralCount: 0, fishCount: 0 }
+  const counts = surveyStore.beltRecordCounts[belt.id] ?? { substrateCount: 0, assessedCount: 0, fishCount: 0 }
   try {
     await ElMessageBox.confirm(
-      `删除样带「${belt.no}」将同时删除其 ${counts.coralCount} 条珊瑚记录与 ${counts.fishCount} 条计数记录，确认删除？`,
+      `删除样带「${belt.no}」将同时删除其 ${counts.substrateCount} 条外业底质与 ${counts.fishCount} 条计数记录，关联评定单转挂起不删除。确认删除？`,
       '删除确认',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
     )
@@ -243,7 +247,7 @@ onMounted(() => {
       <div class="gb-stats-row">
         <StatBadge label="样带条数" :value="stats.beltCount" suffix="条" icon="Files" />
         <StatBadge label="累计长度" :value="stats.totalLength" suffix="m" tone="info" icon="Odometer" />
-        <StatBadge label="珊瑚记录" :value="stats.coralCount" suffix="条" tone="success" icon="Histogram" />
+        <StatBadge label="外业底质" :value="stats.coralCount" suffix="条" tone="success" icon="Histogram" />
         <StatBadge label="计数记录" :value="stats.fishCount" suffix="条" tone="warning" icon="DataLine" />
       </div>
 
@@ -281,7 +285,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="belt.observer" label="调查人" width="110" />
-        <el-table-column label="珊瑚记录" width="120" align="center">
+        <el-table-column label="外业底质" width="120" align="center">
           <template #default="{ row }">
             <el-button text type="primary" size="small" @click="gotoCorals(row.belt)">
               {{ row.coralCount }} 条
@@ -301,15 +305,18 @@ onMounted(() => {
             <div class="gb-hint gb-mono">{{ row.coverCmTotal }} cm</div>
           </template>
         </el-table-column>
-        <el-table-column label="白化" width="150">
+        <el-table-column label="当年白化评定" width="170">
           <template #default="{ row }">
             <BleachTag :level="row.grade" size="small" />
-            <div class="gb-hint gb-mono">指数 {{ row.bleachIndex }}</div>
+            <div class="gb-hint gb-mono">
+              指数 {{ row.bleachIndex }} · 已评 {{ row.assessedCount }}
+              <template v-if="row.suspendedCount > 0"> · 挂起 {{ row.suspendedCount }}</template>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" type="primary" :icon="Right" @click="gotoCorals(row.belt)">珊瑚</el-button>
+            <el-button size="small" type="primary" :icon="Right" @click="gotoCorals(row.belt)">底质</el-button>
             <el-button size="small" @click="gotoFishes(row.belt)">鱼类</el-button>
             <el-button size="small" :icon="Edit" @click="openEdit(row.belt)">编辑</el-button>
             <el-button size="small" type="danger" plain :icon="Delete" @click="removeBelt(row.belt)">删除</el-button>

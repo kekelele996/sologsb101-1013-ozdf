@@ -2,7 +2,8 @@
  * 白化工具：白化等级排序权重、白化指数换算与配色映射。
  * 页面、store 与数据库播种共用同一套算法。
  */
-import type { BleachLevel, CoralForm } from '@/types/coralRecord'
+import type { BleachLevel } from '@/types/assessment'
+import type { CoralForm } from '@/types/substrate'
 
 /** 保留小数位 */
 export function round(value: number, digits = 2): number {

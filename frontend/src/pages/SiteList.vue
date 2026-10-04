@@ -55,13 +55,14 @@ const rows = computed(() => {
   return sites.map((site) => {
     const belts = beltStore.beltsOfSite(site.id)
     const beltIds = new Set(belts.map((belt) => belt.id))
-    const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
-    const index = bleachIndex(corals)
+    const subs = surveyStore.substrates.filter((sub) => beltIds.has(sub.beltId))
+    const currentRows = surveyStore.currentRowsOfBelts(beltIds)
+    const index = bleachIndex(currentRows)
     return {
       site,
       beltCount: belts.length,
       beltLengthM: belts.reduce((sum, belt) => sum + belt.lengthM, 0),
-      coralCount: corals.length,
+      coralCount: subs.length,
       bleachIndex: index,
       grade: bleachGrade(index)
     }

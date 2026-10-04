@@ -112,10 +112,25 @@ export const useBeltStore = defineStore('belt', () => {
     await db.belts.update(id, { ...patch, updatedAt: Date.now() } as never)
   }
 
-  /** 删除样带：级联删除其珊瑚记录与鱼类计数 */
+  /** 删除样带：级联删除其外业底质与鱼类计数；监测站评定单不删，转为挂起留痕 */
   async function removeBelt(id: string): Promise<void> {
-    await db.transaction('rw', [db.belts, db.corals, db.fishes], async () => {
-      await db.corals.where('beltId').equals(id).delete()
+    await db.transaction('rw', [db.belts, db.substrates, db.assessments, db.fishes], async () => {
+      await db.substrates.where('beltId').equals(id).delete()
+      // 评定单保留（监测站那份不动数据归属），解除与底物/样带的连接并挂起
+      await db.assessments
+        .where('beltId')
+        .equals(id)
+        .modify((a) => {
+          if (a.protocolVersion !== 'GB-OLD-2010') {
+            a.substrateId = null
+            a.beltId = null
+            a.status = 'suspended'
+            a.suspendReason = 'substrate-missing'
+            a.fieldAck = false
+            a.stationAck = false
+          }
+          a.updatedAt = Date.now()
+        })
       await db.fishes.where('beltId').equals(id).delete()
       await db.belts.delete(id)
     })

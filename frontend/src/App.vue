@@ -28,12 +28,14 @@ const activeKey = computed(() => {
   if (route.path.startsWith('/reefs/')) return '/reefs'
   if (route.path.startsWith('/sites/')) return '/reefs'
   if (route.path.startsWith('/belts/')) return '/coverage'
+  if (route.path.startsWith('/assessments')) return '/assessments'
   return route.path
 })
 
 const navItems = computed(() => [
   { key: '/reefs', label: '礁区台账', icon: Odometer, badge: String(reefStore.reefs.length) },
-  { key: '/coverage', label: '覆盖度汇总', icon: PieChart, badge: String(surveyStore.corals.length) }
+  { key: '/assessments', label: '监测站评定单', icon: Files, badge: String(surveyStore.suspendedAssessments.length) },
+  { key: '/coverage', label: '覆盖度汇总', icon: PieChart, badge: String(surveyStore.substrates.length) }
 ])
 
 /** 当前上下文的快捷入口：礁区 → 站位 → 样带 → 珊瑚/鱼类 */
@@ -51,10 +53,11 @@ const contextLinks = computed(() => {
   if (route.path.startsWith('/belts/') && id) {
     const belt = beltStore.beltById(id)
     if (belt) links.push({ label: '所属站位样带', path: `/sites/${belt.siteId}/belts` })
-    links.push({ label: '珊瑚计数', path: `/belts/${id}/corals` })
+    links.push({ label: '外业底质', path: `/belts/${id}/corals` })
     links.push({ label: '鱼类计数', path: `/belts/${id}/fishes` })
   }
-  if (route.path.startsWith('/coverage')) links.push({ label: '礁区台账', path: '/reefs' })
+  if (route.path.startsWith('/assessments')) links.push({ label: '覆盖度汇总', path: '/coverage' })
+  if (route.path.startsWith('/coverage')) links.push({ label: '监测站评定单', path: '/assessments' })
   return links
 })
 
@@ -107,8 +110,9 @@ function go(path: string): void {
         本地库 {{ DB_NAME }} · 结构版本 v{{ DB_VERSION }} · 数据仅存于本浏览器 IndexedDB，不上传任何服务器。
       </span>
       <span>
-        礁区 {{ reefStore.reefs.length }} · 站位 {{ reefStore.sites.length }} · 样带 {{ beltStore.belts.length }} · 珊瑚记录
-        {{ surveyStore.corals.length }} · 计数记录 {{ surveyStore.fishes.length }}
+        礁区 {{ reefStore.reefs.length }} · 站位 {{ reefStore.sites.length }} · 样带 {{ beltStore.belts.length }} · 外业底质
+        {{ surveyStore.substrates.length }} · 评定单 {{ surveyStore.assessments.length }}（挂起 {{ surveyStore.suspendedAssessments.length }}）· 计数记录
+        {{ surveyStore.fishes.length }}
       </span>
     </footer>
   </div>

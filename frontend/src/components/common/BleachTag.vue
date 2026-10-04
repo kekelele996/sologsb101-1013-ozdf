@@ -5,7 +5,7 @@
  */
 import { computed } from 'vue'
 import { CircleCheckFilled, CircleCloseFilled, InfoFilled, Warning, WarningFilled } from '@element-plus/icons-vue'
-import type { BleachLevel } from '@/types/coralRecord'
+import type { BleachLevel } from '@/types/assessment'
 import { BLEACH_BG, BLEACH_COLOR, BLEACH_ICON, BLEACH_WEIGHT } from '@/utils/bleach'
 
 const props = withDefaults(

@@ -40,21 +40,24 @@ const form = reactive({
   manager: ''
 })
 
-/** 礁区卡片：汇总站位/样带/珊瑚记录数与平均白化指数 */
+/** 礁区卡片：汇总站位/样带/底质数与当年平均白化指数（仅现行规程已对上评定单） */
 const cards = computed(() =>
   reefStore.filteredReefs.map((reef: Reef) => {
     const sites = reefStore.sites.filter((site) => site.reefId === reef.id)
     const siteIds = new Set(sites.map((site) => site.id))
     const belts = beltStore.belts.filter((belt) => siteIds.has(belt.siteId))
     const beltIds = new Set(belts.map((belt) => belt.id))
-    const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
+    const subs = surveyStore.substrates.filter((sub) => beltIds.has(sub.beltId))
+    const currentRows = surveyStore.currentRowsOfBelts(beltIds)
+    const suspended = surveyStore.assessments.filter((a) => (a.beltId ? beltIds.has(a.beltId) : false) && a.status === 'suspended').length
     const fishes = surveyStore.fishes.filter((fish) => beltIds.has(fish.beltId))
-    const index = bleachIndex(corals)
+    const index = bleachIndex(currentRows)
     return {
       reef,
       siteCount: sites.length,
       beltCount: belts.length,
-      coralCount: corals.length,
+      coralCount: subs.length,
+      suspendedCount: suspended,
       fishTotal: fishes.reduce((sum, fish) => sum + fish.count, 0),
       bleachIndex: index,
       grade: bleachGrade(index)
@@ -247,7 +250,7 @@ watch(
       <StatBadge label="筛选后礁区" :value="totals.reefs" suffix="个" icon="Odometer" />
       <StatBadge label="站位总数" :value="totals.sites" suffix="个" tone="info" icon="Grid" />
       <StatBadge label="样带总数" :value="totals.belts" suffix="条" tone="success" icon="Files" />
-      <StatBadge label="珊瑚记录" :value="totals.corals" suffix="条" icon="Histogram" />
+      <StatBadge label="外业底质" :value="totals.corals" suffix="条" icon="Histogram" />
       <StatBadge
         label="平均白化指数"
         :value="totals.avgBleachIndex"
@@ -286,7 +289,15 @@ watch(
         <div class="reef-card__stats">
           <StatBadge label="站位" :value="card.siteCount" suffix="个" size="small" tone="info" icon="Grid" />
           <StatBadge label="样带" :value="card.beltCount" suffix="条" size="small" icon="Files" />
-          <StatBadge label="珊瑚记录" :value="card.coralCount" suffix="条" size="small" tone="success" icon="Histogram" />
+          <StatBadge label="外业底质" :value="card.coralCount" suffix="条" size="small" tone="success" icon="Histogram" />
+          <StatBadge
+            label="挂起待认"
+            :value="card.suspendedCount"
+            suffix="单"
+            size="small"
+            :tone="card.suspendedCount > 0 ? 'warning' : 'success'"
+            icon="WarningFilled"
+          />
           <StatBadge
             label="白化指数"
             :value="card.bleachIndex"

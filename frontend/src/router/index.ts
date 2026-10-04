@@ -2,7 +2,8 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
 /**
  * 路由表：路径与提示词逐字一致。
- * /reefs、/reefs/:id/sites、/sites/:id/belts、/belts/:id/corals、/belts/:id/fishes、/coverage
+ * /reefs、/reefs/:id/sites、/sites/:id/belts、/belts/:id/corals、/belts/:id/fishes、
+ * /assessments（监测站评定单）、/coverage
  * 全部页面懒加载，构建时自动分包。
  */
 const routes: RouteRecordRaw[] = [
@@ -29,13 +30,19 @@ const routes: RouteRecordRaw[] = [
     path: '/belts/:id/corals',
     name: 'coral-entry',
     component: () => import('@/pages/CoralEntry.vue'),
-    meta: { title: '底质与珊瑚分类计数', icon: 'Histogram' }
+    meta: { title: '外业底质记录', icon: 'Histogram' }
   },
   {
     path: '/belts/:id/fishes',
     name: 'fish-entry',
     component: () => import('@/pages/FishEntry.vue'),
     meta: { title: '鱼类与无脊椎动物计数', icon: 'DataLine' }
+  },
+  {
+    path: '/assessments',
+    name: 'assessment-review',
+    component: () => import('@/pages/AssessmentReview.vue'),
+    meta: { title: '白化评定单（监测站）', icon: 'DocumentChecked' }
   },
   {
     path: '/coverage',
