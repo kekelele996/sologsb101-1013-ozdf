@@ -4,7 +4,8 @@
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { db, createId, watchTable } from '@/utils/db'
+import { db, watchTable } from '@/utils/db'
+import { createId } from '@/utils/id'
 import type { Belt, BeltDraft, Orientation } from '@/types/belt'
 import { ORIENTATIONS, createEmptyBeltDraft } from '@/types/belt'
 
@@ -112,13 +113,18 @@ export const useBeltStore = defineStore('belt', () => {
     await db.belts.update(id, { ...patch, updatedAt: Date.now() } as never)
   }
 
-  /** 删除样带：级联删除其珊瑚记录与鱼类计数 */
+  /** 删除样带：级联删除其外业记录、评定单与鱼类计数 */
   async function removeBelt(id: string): Promise<void> {
-    await db.transaction('rw', [db.belts, db.corals, db.fishes], async () => {
-      await db.corals.where('beltId').equals(id).delete()
-      await db.fishes.where('beltId').equals(id).delete()
-      await db.belts.delete(id)
-    })
+    await db.transaction(
+      'rw',
+      [db.belts, db.fieldRecords, db.assessmentForms, db.fishes],
+      async () => {
+        await db.fieldRecords.where('beltId').equals(id).delete()
+        await db.assessmentForms.where('beltId').equals(id).delete()
+        await db.fishes.where('beltId').equals(id).delete()
+        await db.belts.delete(id)
+      }
+    )
     if (currentBeltId.value === id) selectBelt(null)
   }
 

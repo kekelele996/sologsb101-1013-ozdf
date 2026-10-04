@@ -20,7 +20,7 @@ import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
 import { formatLatLng, SUBSTRATES, validateLatLng } from '@/types/site'
 import type { Site } from '@/types/site'
-import { bleachGrade, bleachIndex } from '@/utils/bleach'
+import { bleachGrade, round } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
 
 const route = useRoute()
@@ -55,13 +55,14 @@ const rows = computed(() => {
   return sites.map((site) => {
     const belts = beltStore.beltsOfSite(site.id)
     const beltIds = new Set(belts.map((belt) => belt.id))
-    const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
-    const index = bleachIndex(corals)
+    const records = surveyStore.fieldRecords.filter((record) => beltIds.has(record.beltId))
+    const rows = surveyStore.coverageRows.filter((row) => beltIds.has(row.beltId))
+    const index = rows.length ? round(rows.reduce((sum, row) => sum + row.bleachIndex, 0) / rows.length, 2) : 0
     return {
       site,
       beltCount: belts.length,
       beltLengthM: belts.reduce((sum, belt) => sum + belt.lengthM, 0),
-      coralCount: corals.length,
+      coralCount: records.length,
       bleachIndex: index,
       grade: bleachGrade(index)
     }

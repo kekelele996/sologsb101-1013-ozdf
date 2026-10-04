@@ -33,7 +33,7 @@ const activeKey = computed(() => {
 
 const navItems = computed(() => [
   { key: '/reefs', label: '礁区台账', icon: Odometer, badge: String(reefStore.reefs.length) },
-  { key: '/coverage', label: '覆盖度汇总', icon: PieChart, badge: String(surveyStore.corals.length) }
+  { key: '/coverage', label: '覆盖度汇总', icon: PieChart, badge: String(surveyStore.fieldRecords.length) }
 ])
 
 /** 当前上下文的快捷入口：礁区 → 站位 → 样带 → 珊瑚/鱼类 */
@@ -107,8 +107,8 @@ function go(path: string): void {
         本地库 {{ DB_NAME }} · 结构版本 v{{ DB_VERSION }} · 数据仅存于本浏览器 IndexedDB，不上传任何服务器。
       </span>
       <span>
-        礁区 {{ reefStore.reefs.length }} · 站位 {{ reefStore.sites.length }} · 样带 {{ beltStore.belts.length }} · 珊瑚记录
-        {{ surveyStore.corals.length }} · 计数记录 {{ surveyStore.fishes.length }}
+        礁区 {{ reefStore.reefs.length }} · 站位 {{ reefStore.sites.length }} · 样带 {{ beltStore.belts.length }} · 外业记录
+        {{ surveyStore.fieldRecords.length }} · 评定单 {{ surveyStore.assessmentForms.length }} · 计数记录 {{ surveyStore.fishes.length }}
       </span>
     </footer>
   </div>

@@ -19,7 +19,7 @@ import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
 import { AREA_BUCKETS, createEmptyReefFilter, PROTECT_STATUSES } from '@/types/reef'
 import type { ProtectStatus, Reef } from '@/types/reef'
-import { bleachGrade, bleachIndex } from '@/utils/bleach'
+import { bleachGrade, round } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
 
 const route = useRoute()
@@ -47,14 +47,15 @@ const cards = computed(() =>
     const siteIds = new Set(sites.map((site) => site.id))
     const belts = beltStore.belts.filter((belt) => siteIds.has(belt.siteId))
     const beltIds = new Set(belts.map((belt) => belt.id))
-    const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
+    const records = surveyStore.fieldRecords.filter((record) => beltIds.has(record.beltId))
     const fishes = surveyStore.fishes.filter((fish) => beltIds.has(fish.beltId))
-    const index = bleachIndex(corals)
+    const rows = surveyStore.coverageRows.filter((row) => beltIds.has(row.beltId))
+    const index = rows.length ? round(rows.reduce((sum, row) => sum + row.bleachIndex, 0) / rows.length, 2) : 0
     return {
       reef,
       siteCount: sites.length,
       beltCount: belts.length,
-      coralCount: corals.length,
+      coralCount: records.length,
       fishTotal: fishes.reduce((sum, fish) => sum + fish.count, 0),
       bleachIndex: index,
       grade: bleachGrade(index)

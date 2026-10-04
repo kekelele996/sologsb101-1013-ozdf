@@ -1,19 +1,25 @@
 /**
  * IndexedDB 持久化层（Dexie 封装）
  * - 库名 gbcoralbelt，含数据结构版本号与升级迁移逻辑
- * - 升级时按 version().stores() 补齐索引
- * - 首次打开自动播种互相引用的演示数据（礁区 → 站位 → 样带 → 珊瑚记录/鱼类计数）
+ * - v3：底质记录拆成外业记录（fieldRecords）+ 监测站评定单（assessmentForms），
+ *   旧 corals 表按属名拆分迁移；升级时按 version().stores() 补齐索引
+ * - 首次打开自动播种互相引用的演示数据（礁区 → 站位 → 样带 → 外业记录/评定单/鱼类计数）
  * - 纯前端应用：不依赖任何后端服务或数据库服务
  */
 import Dexie, { liveQuery, type Table } from 'dexie'
 import type { Reef } from '@/types/reef'
 import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
-import type { CoralRecord } from '@/types/coralRecord'
+import type { CoralRecord, BleachLevel, CoralForm } from '@/types/coralRecord'
+import type { FieldRecord } from '@/types/fieldRecord'
+import type { AssessmentForm } from '@/types/assessmentForm'
 import type { FishCount } from '@/types/fishCount'
+import { splitCoralsToRecords, type MissingGenusItem } from '@/utils/migrate'
+import { CURRENT_PROTOCOL_VERSION, PROTOCOL_V1 } from '@/utils/protocol'
+import { createId } from '@/utils/id'
 
 /** 当前数据结构版本号：每次调整字段结构必须 +1 并补迁移 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** 数据库名（浏览器 IndexedDB 中的库名） */
 export const DB_NAME = 'gbcoralbelt'
@@ -22,7 +28,8 @@ export const DB_NAME = 'gbcoralbelt'
 export const LS_KEYS = {
   dbVersion: 'gbcoralbelt:db-version',
   lastBackupAt: 'gbcoralbelt:last-backup-at',
-  lastReefId: 'gbcoralbelt:last-reef-id'
+  lastReefId: 'gbcoralbelt:last-reef-id',
+  migrationIssues: 'gbcoralbelt:migration-issues'
 } as const
 
 /** 备份文件结构，供 utils/export.ts 与覆盖度汇总页使用 */
@@ -33,7 +40,12 @@ export interface BackupPayload {
   reefs: Reef[]
   sites: Site[]
   belts: Belt[]
-  corals: CoralRecord[]
+  /** 外业底质记录（船上那份） */
+  fieldRecords: FieldRecord[]
+  /** 监测站评定单 */
+  assessmentForms: AssessmentForm[]
+  /** 旧版珊瑚记录（v2 及以前备份可能含此字段，导入时按属名拆分） */
+  corals?: CoralRecord[]
   fishes: FishCount[]
 }
 
@@ -41,6 +53,9 @@ export class CoralBeltDatabase extends Dexie {
   reefs!: Table<Reef, string>
   sites!: Table<Site, string>
   belts!: Table<Belt, string>
+  fieldRecords!: Table<FieldRecord, string>
+  assessmentForms!: Table<AssessmentForm, string>
+  /** 旧版珊瑚记录表（v3 起仅迁移期间读取，迁移后清空） */
   corals!: Table<CoralRecord, string>
   fishes!: Table<FishCount, string>
 
@@ -57,45 +72,47 @@ export class CoralBeltDatabase extends Dexie {
     })
 
     // v2：补齐筛选与统计需要的索引（位置/面积、经纬度/水深、样带长度与朝向、白化等级、类别）
+    this.version(2).stores({
+      reefs: 'id, name, location, protectStatus, areaKm2, manager, updatedAt',
+      sites: 'id, reefId, no, lat, lng, depthM, substrate, updatedAt',
+      belts: 'id, siteId, no, lengthM, orientation, surveyDate, observer, updatedAt',
+      corals: 'id, beltId, genus, form, coverCm, bleachLevel, updatedAt',
+      fishes: 'id, beltId, family, count, sizeClass, category, updatedAt'
+    })
+
+    // v3：底质记录拆成外业记录 + 监测站评定单；旧 corals 表保留索引用于迁移读取
     this.version(DB_VERSION)
       .stores({
         reefs: 'id, name, location, protectStatus, areaKm2, manager, updatedAt',
         sites: 'id, reefId, no, lat, lng, depthM, substrate, updatedAt',
         belts: 'id, siteId, no, lengthM, orientation, surveyDate, observer, updatedAt',
+        fieldRecords: 'id, beltId, genus, form, coverCm, updatedAt',
+        assessmentForms: 'id, fieldRecordId, siteNo, beltId, genus, bleachLevel, protocolVersion, status, updatedAt',
         corals: 'id, beltId, genus, form, coverCm, bleachLevel, updatedAt',
         fishes: 'id, beltId, family, count, sizeClass, category, updatedAt'
       })
       .upgrade(async (tx) => {
-        // 迁移：历史数据补齐时间戳与必填字段，避免列表排序与筛选拿到 undefined
-        const defaults: Array<[string, () => Record<string, unknown>]> = [
-          ['reefs', () => ({ manager: '', areaKm2: 0 })],
-          ['sites', () => ({ lat: 0, lng: 0, depthM: 5, substrate: '珊瑚礁石' })],
-          ['belts', () => ({ lengthM: 50, orientation: '北', observer: '' })],
-          ['corals', () => ({ coverCm: 0, bleachLevel: '无', remark: '' })],
-          ['fishes', () => ({ count: 0, sizeClass: '11-20cm', category: '鱼类' })]
-        ]
-        for (const [tableName, factory] of defaults) {
-          await tx
-            .table(tableName)
-            .toCollection()
-            .modify((row: Record<string, unknown>) => {
-              const now = Date.now()
-              if (typeof row.createdAt !== 'number') row.createdAt = now
-              if (typeof row.updatedAt !== 'number') row.updatedAt = row.createdAt
-              Object.assign(row, factory())
-            })
-        }
+        // 迁移：旧版珊瑚记录（无规程版本）按属名拆成外业记录 + 监测站评定单
+        const [oldCorals, belts, sites] = await Promise.all([
+          tx.table('corals').toArray(),
+          tx.table('belts').toArray(),
+          tx.table('sites').toArray()
+        ])
+        const { fieldRecords, assessmentForms, missingGenus } = splitCoralsToRecords(
+          oldCorals,
+          belts as Belt[],
+          sites as Site[]
+        )
+        if (fieldRecords.length > 0) await tx.table('fieldRecords').bulkPut(fieldRecords)
+        if (assessmentForms.length > 0) await tx.table('assessmentForms').bulkPut(assessmentForms)
+        await tx.table('corals').clear()
+        // 缺属名的逐条列入迁移问题清单
+        if (missingGenus.length > 0) writeMigrationIssues(missingGenus)
       })
   }
 }
 
 export const db = new CoralBeltDatabase()
-
-/** 生成主键：短前缀 + 时间戳 + 随机串，避免多标签页写入冲突 */
-export function createId(prefix: string): string {
-  const rand = Math.random().toString(36).slice(2, 8)
-  return `${prefix}_${Date.now().toString(36)}${rand}`
-}
 
 /** 订阅单表变化（liveQuery），返回取消订阅函数 */
 export function watchTable<T>(table: () => Table<T, string>): { subscribe: (cb: (rows: T[]) => void) => () => void } {
@@ -111,15 +128,47 @@ export function watchTable<T>(table: () => Table<T, string>): { subscribe: (cb: 
   }
 }
 
+/* ------------------------------ 迁移问题清单 ------------------------------ */
+
+/** 写入迁移问题清单（缺属名逐条列出） */
+export function writeMigrationIssues(issues: MissingGenusItem[]): void {
+  try {
+    localStorage.setItem(LS_KEYS.migrationIssues, JSON.stringify(issues))
+  } catch {
+    // 隐私模式下 localStorage 不可用，忽略即可
+  }
+}
+
+/** 读取迁移问题清单 */
+export function readMigrationIssues(): MissingGenusItem[] {
+  try {
+    const raw = localStorage.getItem(LS_KEYS.migrationIssues)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? (parsed as MissingGenusItem[]) : []
+  } catch {
+    return []
+  }
+}
+
+/** 清空迁移问题清单 */
+export function clearMigrationIssues(): void {
+  try {
+    localStorage.removeItem(LS_KEYS.migrationIssues)
+  } catch {
+    // 忽略
+  }
+}
+
 /* ------------------------------ 演示数据播种 ------------------------------ */
 
 interface SeedCoral {
-  id: string
-  beltId: string
   genus: string
-  form: CoralRecord['form']
+  form: CoralForm
   coverCm: number
-  bleachLevel: CoralRecord['bleachLevel']
+  bleachLevel: BleachLevel
+  /** 规程版本，默认当前规程 v2 */
+  protocolVersion?: string
   remark: string
 }
 
@@ -145,8 +194,8 @@ interface SeedBelt {
 }
 
 /**
- * 播种演示数据：3 个礁区 → 4 个站位 → 5 条样带 → 14 条珊瑚记录 + 12 条鱼类计数，
- * 覆盖无 / 轻 / 中 / 重 / 死亡 全部白化等级，保证每个页面打开都有内容、层级路由也能命中真实 id。
+ * 播种演示数据：3 个礁区 → 4 个站位 → 5 条样带 → 外业记录 + 评定单 + 鱼类计数，
+ * 覆盖无 / 轻 / 中 / 重 / 死亡 全部白化等级；评定单以当前规程 v2 为主，含少量旧规程 v1 留档。
  */
 export async function seedDemoData(): Promise<void> {
   const now = Date.now()
@@ -228,10 +277,10 @@ export async function seedDemoData(): Promise<void> {
       surveyDate: today,
       observer: '林之遥',
       corals: [
-        { id: 'cor_ql01a_1', beltId: 'belt_ql01_a', genus: '鹿角珊瑚属', form: '枝状', coverCm: 860, bleachLevel: '无', remark: '长势良好' },
-        { id: 'cor_ql01a_2', beltId: 'belt_ql01_a', genus: '杯形珊瑚属', form: '枝状', coverCm: 540, bleachLevel: '轻', remark: '局部褪色' },
-        { id: 'cor_ql01a_3', beltId: 'belt_ql01_a', genus: '滨珊瑚属', form: '块状', coverCm: 1120, bleachLevel: '无', remark: '' },
-        { id: 'cor_ql01a_4', beltId: 'belt_ql01_a', genus: '软珊瑚属', form: '软珊瑚', coverCm: 380, bleachLevel: '轻', remark: '' }
+        { genus: '鹿角珊瑚属', form: '枝状', coverCm: 860, bleachLevel: '无', remark: '长势良好' },
+        { genus: '杯形珊瑚属', form: '枝状', coverCm: 540, bleachLevel: '轻', remark: '局部褪色' },
+        { genus: '滨珊瑚属', form: '块状', coverCm: 1120, bleachLevel: '无', remark: '' },
+        { genus: '软珊瑚属', form: '软珊瑚', coverCm: 380, bleachLevel: '轻', protocolVersion: PROTOCOL_V1, remark: '' }
       ],
       fishes: [
         { id: 'fsh_ql01a_1', beltId: 'belt_ql01_a', family: '雀鲷科', count: 46, sizeClass: '0-10cm', category: '鱼类' },
@@ -249,9 +298,9 @@ export async function seedDemoData(): Promise<void> {
       surveyDate: today,
       observer: '林之遥',
       corals: [
-        { id: 'cor_ql01b_1', beltId: 'belt_ql01_b', genus: '蔷薇珊瑚属', form: '叶状', coverCm: 720, bleachLevel: '中', remark: '边缘白化明显' },
-        { id: 'cor_ql01b_2', beltId: 'belt_ql01_b', genus: '蜂巢珊瑚属', form: '块状', coverCm: 980, bleachLevel: '轻', remark: '' },
-        { id: 'cor_ql01b_3', beltId: 'belt_ql01_b', genus: '鹿角珊瑚属', form: '枝状', coverCm: 430, bleachLevel: '重', remark: '大面积白化，部分死亡' }
+        { genus: '蔷薇珊瑚属', form: '叶状', coverCm: 720, bleachLevel: '中', remark: '边缘白化明显' },
+        { genus: '蜂巢珊瑚属', form: '块状', coverCm: 980, bleachLevel: '轻', remark: '' },
+        { genus: '鹿角珊瑚属', form: '枝状', coverCm: 430, bleachLevel: '重', remark: '大面积白化，部分死亡' }
       ],
       fishes: [
         { id: 'fsh_ql01b_1', beltId: 'belt_ql01_b', family: '隆头鱼科', count: 22, sizeClass: '11-20cm', category: '鱼类' },
@@ -268,8 +317,8 @@ export async function seedDemoData(): Promise<void> {
       surveyDate: today,
       observer: '周渝',
       corals: [
-        { id: 'cor_ql02a_1', beltId: 'belt_ql02_a', genus: '滨珊瑚属', form: '块状', coverCm: 1240, bleachLevel: '无', remark: '' },
-        { id: 'cor_ql02a_2', beltId: 'belt_ql02_a', genus: '陀螺珊瑚属', form: '块状', coverCm: 260, bleachLevel: '死亡', remark: '仅存骨骼，附着藻类' }
+        { genus: '滨珊瑚属', form: '块状', coverCm: 1240, bleachLevel: '无', remark: '' },
+        { genus: '陀螺珊瑚属', form: '块状', coverCm: 260, bleachLevel: '死亡', protocolVersion: PROTOCOL_V1, remark: '仅存骨骼，附着藻类' }
       ],
       fishes: [
         { id: 'fsh_ql02a_1', beltId: 'belt_ql02_a', family: '石斑鱼科', count: 4, sizeClass: '>30cm', category: '鱼类' },
@@ -285,9 +334,9 @@ export async function seedDemoData(): Promise<void> {
       surveyDate: today,
       observer: '陈立群',
       corals: [
-        { id: 'cor_yr01a_1', beltId: 'belt_yr01_a', genus: '星珊瑚属', form: '块状', coverCm: 1580, bleachLevel: '轻', remark: '' },
-        { id: 'cor_yr01a_2', beltId: 'belt_yr01_a', genus: '柳珊瑚属', form: '软珊瑚', coverCm: 640, bleachLevel: '中', remark: '水流较强区域' },
-        { id: 'cor_yr01a_3', beltId: 'belt_yr01_a', genus: '石芝珊瑚属', form: '叶状', coverCm: 480, bleachLevel: '无', remark: '' }
+        { genus: '星珊瑚属', form: '块状', coverCm: 1580, bleachLevel: '轻', remark: '' },
+        { genus: '柳珊瑚属', form: '软珊瑚', coverCm: 640, bleachLevel: '中', remark: '水流较强区域' },
+        { genus: '石芝珊瑚属', form: '叶状', coverCm: 480, bleachLevel: '无', remark: '' }
       ],
       fishes: [
         { id: 'fsh_yr01a_1', beltId: 'belt_yr01_a', family: '笛鲷科', count: 28, sizeClass: '21-30cm', category: '鱼类' },
@@ -297,15 +346,15 @@ export async function seedDemoData(): Promise<void> {
     },
     {
       id: 'belt_dz01_a',
-      siteId: 'site_dz_01',
+      siteId: 'site_dz01_01',
       no: 'T-01',
       lengthM: 25,
       orientation: '东',
       surveyDate: today,
       observer: '陈立群',
       corals: [
-        { id: 'cor_dz01a_1', beltId: 'belt_dz01_a', genus: '杯形珊瑚属', form: '枝状', coverCm: 520, bleachLevel: '重', remark: '受台风扰动后白化' },
-        { id: 'cor_dz01a_2', beltId: 'belt_dz01_a', genus: '蜂巢珊瑚属', form: '块状', coverCm: 310, bleachLevel: '中', remark: '' }
+        { genus: '杯形珊瑚属', form: '枝状', coverCm: 520, bleachLevel: '重', remark: '受台风扰动后白化' },
+        { genus: '蜂巢珊瑚属', form: '块状', coverCm: 310, bleachLevel: '中', remark: '' }
       ],
       fishes: [
         { id: 'fsh_dz01a_1', beltId: 'belt_dz01_a', family: '雀鲷科', count: 34, sizeClass: '0-10cm', category: '鱼类' },
@@ -314,7 +363,7 @@ export async function seedDemoData(): Promise<void> {
     }
   ]
 
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
+  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.fieldRecords, db.assessmentForms, db.fishes], async () => {
     const stamp = (offset: number): { createdAt: number; updatedAt: number } => ({
       createdAt: now + offset,
       updatedAt: now + offset
@@ -330,11 +379,42 @@ export async function seedDemoData(): Promise<void> {
         return { ...rest, ...stamp(200 + index) }
       })
     )
-    await db.corals.bulkPut(
-      belts.flatMap((belt, beltIndex) =>
-        belt.corals.map((coral, coralIndex) => ({ ...coral, ...stamp(300 + beltIndex * 100 + coralIndex) }))
-      )
-    )
+
+    // 外业记录 + 监测站评定单：每条旧珊瑚拆成一份外业记录 + 一份评定单
+    const fieldRecords: FieldRecord[] = []
+    const assessmentForms: AssessmentForm[] = []
+    belts.forEach((belt, beltIndex) => {
+      const site = sites.find((item) => item.id === belt.siteId)
+      belt.corals.forEach((coral, coralIndex) => {
+        const offset = 300 + beltIndex * 100 + coralIndex
+        const fieldRecordId = `fld_${belt.id}_${coralIndex}`
+        fieldRecords.push({
+          id: fieldRecordId,
+          beltId: belt.id,
+          genus: coral.genus,
+          form: coral.form,
+          coverCm: coral.coverCm,
+          remark: coral.remark,
+          ...stamp(offset)
+        })
+        assessmentForms.push({
+          id: `asm_${belt.id}_${coralIndex}`,
+          fieldRecordId,
+          siteNo: site?.no ?? '',
+          beltId: belt.id,
+          genus: coral.genus,
+          bleachLevel: coral.bleachLevel,
+          protocolVersion: coral.protocolVersion ?? CURRENT_PROTOCOL_VERSION,
+          status: 'active',
+          reconcileNote: '',
+          issuedAt: now + offset,
+          ...stamp(offset)
+        })
+      })
+    })
+    await db.fieldRecords.bulkPut(fieldRecords)
+    await db.assessmentForms.bulkPut(assessmentForms)
+
     await db.fishes.bulkPut(
       belts.flatMap((belt, beltIndex) =>
         belt.fishes.map((fish, fishIndex) => ({ ...fish, ...stamp(400 + beltIndex * 100 + fishIndex) }))
@@ -355,9 +435,21 @@ export async function initDatabase(): Promise<void> {
 
 /** 清空全部业务表（导入覆盖与重置共用） */
 export async function clearAllTables(): Promise<void> {
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    await Promise.all([db.reefs.clear(), db.sites.clear(), db.belts.clear(), db.corals.clear(), db.fishes.clear()])
-  })
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.fieldRecords, db.assessmentForms, db.corals, db.fishes],
+    async () => {
+      await Promise.all([
+        db.reefs.clear(),
+        db.sites.clear(),
+        db.belts.clear(),
+        db.fieldRecords.clear(),
+        db.assessmentForms.clear(),
+        db.corals.clear(),
+        db.fishes.clear()
+      ])
+    }
+  )
 }
 
 /** 清空并重新播种演示数据 */
@@ -368,14 +460,15 @@ export async function resetDatabase(): Promise<void> {
 
 /** 统计各表行数，供页脚概览与覆盖度页展示 */
 export async function countAll(): Promise<Record<string, number>> {
-  const [reefs, sites, belts, corals, fishes] = await Promise.all([
+  const [reefs, sites, belts, fieldRecords, assessmentForms, fishes] = await Promise.all([
     db.reefs.count(),
     db.sites.count(),
     db.belts.count(),
-    db.corals.count(),
+    db.fieldRecords.count(),
+    db.assessmentForms.count(),
     db.fishes.count()
   ])
-  return { reefs, sites, belts, corals, fishes }
+  return { reefs, sites, belts, fieldRecords, assessmentForms, corals: fieldRecords, fishes }
 }
 
 /** 写入结构版本号到 localStorage，便于覆盖度页比对 */

@@ -17,7 +17,7 @@ import { ORIENTATION_ORDER, useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
 import { BELT_LENGTH_PRESETS, ORIENTATIONS } from '@/types/belt'
 import type { Belt, Orientation } from '@/types/belt'
-import { bleachGrade, bleachIndex, coralCoveragePct, fishDensity } from '@/utils/bleach'
+import { bleachGrade, coralCoveragePct, fishDensity, round } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
 
 const route = useRoute()
@@ -41,17 +41,18 @@ const form = reactive({
   observer: ''
 })
 
-/** 样带行：回显珊瑚记录数、鱼类记录数、覆盖率与白化指数 */
+/** 样带行：回显外业记录数、鱼类记录数、覆盖率与白化指数 */
 const rows = computed(() =>
   beltStore.beltsOfSite(siteId.value).map((belt) => {
-    const corals = surveyStore.coralsOfBelt(belt.id)
+    const records = surveyStore.fieldRecordsOfBelt(belt.id)
     const fishes = surveyStore.fishesOfBelt(belt.id)
-    const coverCmTotal = corals.reduce((sum, coral) => sum + coral.coverCm, 0)
-    const index = bleachIndex(corals)
+    const coverCmTotal = records.reduce((sum, record) => sum + record.coverCm, 0)
+    const bleachRow = surveyStore.coverageRows.find((row) => row.beltId === belt.id)
+    const index = bleachRow ? bleachRow.bleachIndex : 0
     const fishTotal = fishes.filter((fish) => fish.category === '鱼类').reduce((sum, fish) => sum + fish.count, 0)
     return {
       belt,
-      coralCount: corals.length,
+      coralCount: records.length,
       fishCount: fishes.length,
       coverCmTotal,
       coveragePct: coralCoveragePct(coverCmTotal, belt.lengthM),
@@ -67,7 +68,7 @@ const conflicts = computed(() => beltStore.findBeltConflicts(siteId.value))
 const stats = computed(() => {
   const belts = beltStore.beltsOfSite(siteId.value)
   const totalLength = belts.reduce((sum, belt) => sum + belt.lengthM, 0)
-  const coralCount = belts.reduce((sum, belt) => sum + surveyStore.coralsOfBelt(belt.id).length, 0)
+  const coralCount = belts.reduce((sum, belt) => sum + surveyStore.fieldRecordsOfBelt(belt.id).length, 0)
   const fishCount = belts.reduce((sum, belt) => sum + surveyStore.fishesOfBelt(belt.id).length, 0)
   return {
     beltCount: belts.length,

@@ -4,7 +4,8 @@
  */
 import { liveQuery, type Table } from 'dexie'
 import { onScopeDispose, ref, shallowRef, type Ref } from 'vue'
-import { createId, db } from '@/utils/db'
+import { db } from '@/utils/db'
+import { createId } from '@/utils/id'
 
 /** 所有持久化实体的公共字段 */
 export interface IdbRecord {
